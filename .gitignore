@@ -1,0 +1,16 @@
+# Terraform state and provider files
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Ignore Terraform variable files or environment files with secrets
+terraform.tfvars
+*.tfvars
+.env
+
+# Crash logs
+crash.log
+
+# General OS/editor files to ignore
+.DS_Store
