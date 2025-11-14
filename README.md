@@ -68,6 +68,38 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 
 ## Architecture Modes & AWS Services
 
+- **Architecture Diagram**
+
+```mermaid
+flowchart TD
+    subgraph FreeTier["Free Tier Mode (default)"]
+        subgraph DefaultVPC["AWS Default VPC"]
+            Internet -->|HTTP :80| SGFree[Security Group<br/>Allow HTTP from anywhere]
+            SGFree --> EC2Free[EC2 (t2.micro)<br/>Docker + Nginx]
+        end
+    end
+
+    subgraph Production["Production Mode (`enable_alb=true`)"]
+        subgraph VPC["Custom VPC 10.0.0.0/16"]
+            IGW[Internet Gateway]
+            subgraph PublicSubnets["Public Subnets (AZ A & B)"]
+                ALB[Application Load Balancer<br/>HTTPS/ACM]
+            end
+            subgraph AppSubnet["App Subnet (Primary AZ)"]
+                SGApp[Security Group<br/>Only ALB traffic]
+                EC2Prod[EC2 (t2.micro)<br/>Docker + Nginx]
+            end
+        end
+        Internet -->|HTTP/HTTPS| ALB
+        ALB -->|HTTP :80| SGApp --> EC2Prod
+        CloudWatch[(CloudWatch Alarms)]
+        EC2Prod -->|CPU Alarm| CloudWatch
+        ALB -->|Unhealthy Target Alarm| CloudWatch
+        S3[(S3 Backend)]
+        TerraformCLI[Terraform CLI] -->|State| S3
+    end
+```
+
 - **Free Tier mode (default)**  
   - Resources: default VPC/subnet, single `t2.micro` EC2 instance with Docker & Nginx, security group allowing HTTP.  
   - Cost: fits entirely within the AWS Free Tier (assuming <750 instance hours and minimal data transfer).  
