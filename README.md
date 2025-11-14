@@ -17,7 +17,7 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 - **AWS CLI** configured or environment variables set for AWS credentials. (Terraform will use these to authenticate.)
 - **Terraform** installed on your system.
 - An S3 bucket (in `ca-central-1`) for storing the Terraform state (and an optional DynamoDB table for state locking, recommended but not required for this demo).
-- An **ACM certificate** in `ca-central-1` that covers the domain you plan to use for HTTPS (or a temporary wildcard certificate). You will supply its ARN to Terraform.
+- An **ACM certificate** in `ca-central-1` (only required when `enable_alb=true`) that covers the domain you plan to use for HTTPS. You will supply its ARN to Terraform.
 - (Optional) **Docker** installed locally if you want to build/test the Docker image manually, but not required for deployment since the EC2 instance will build and run the image.
 
 ## Local Setup
@@ -35,18 +35,23 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 
 1. **Backend Setup**: Update the `terraform/backend.tf` file with your S3 bucket name (and adjust the key/path if desired). Create the S3 bucket beforehand. For team environments, it's recommended to also configure a DynamoDB table for state locking (not included by default).
 2. **Configure Variables**: Review `terraform/variables.tf`. Update at minimum:
-   - `acm_certificate_arn`: required – must point to an issued ACM certificate in `ca-central-1`.
+   - `enable_alb`: set to `true` if you want the production (paid) architecture with HTTPS through an Application Load Balancer. Leave `false` to stay 100% in the Free Tier.
+   - `acm_certificate_arn`: required **only when** `enable_alb=true` – must point to an issued ACM certificate in `ca-central-1`.
    - `availability_zone` / `secondary_availability_zone`: tune if your account has zonal capacity constraints.
-   - `vpc_cidr`: change if `10.0.0.0/16` conflicts with existing networks.
+   - `vpc_cidr`: change if `10.0.0.0/16` conflicts with existing networks (production mode only).
    - `key_name`: optional – set only if you need SSH access, but remember to also add a security-group rule for port 22.
 3. **Initialize Terraform**:  
    - Using makefile: run `make init` to initialize the Terraform backend and provider.  
    - Or manually: `terraform -chdir=terraform init`.
 4. **Review and Apply**:  
    - Optionally run `make plan` (or `terraform -chdir=terraform plan`) to review the planned changes.  
-   - Deploy the infrastructure with `make apply` (or `terraform -chdir=terraform apply`). Terraform will provision the EC2 instance, security group, etc. 
-5. **Deployment Output**: After apply, Terraform will output the EC2 instance's public IP and a URL. You can use the IP or URL to test the deployment.
-6. **Test the Web Server**: Grab the `alb_https_url` output (or `alb_dns_name`) and open it in a browser. You should see the custom HTML page served via HTTPS through the Application Load Balancer.
+   - Deploy the infrastructure with `make apply` (or `terraform -chdir=terraform apply`).  
+     - Example free-tier deployment: `terraform -chdir=terraform apply`  
+     - Example production deployment: `terraform -chdir=terraform apply -var "enable_alb=true" -var "acm_certificate_arn=arn:aws:acm:ca-central-1:123456789012:certificate/..."` 
+5. **Deployment Output**: After apply, Terraform will output the EC2 instance's public IP (always) and, when `enable_alb=true`, the ALB DNS/URL.
+6. **Test the Web Server**:  
+   - **Free Tier mode** (`enable_alb=false`): open `http://<instance_public_ip>` to reach the Dockerized Nginx directly.  
+   - **Production mode** (`enable_alb=true`): copy the `alb_https_url` output (or `alb_dns_name`) and open it in a browser to hit the HTTPS Application Load Balancer.
 7. **Optional - GitHub Actions**: The workflow in `.github/workflows/terraform.yml` expects the repository secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` so it can run `terraform plan` against your remote state backend. Add those secrets (with least-privilege IAM credentials) before enabling the workflow.
 8. **Cleanup**: When finished, destroy the resources to avoid ongoing charges (though a t2.micro on Free Tier has no cost up to certain usage): run `make destroy` (or `terraform -chdir=terraform destroy`). This will terminate the EC2 instance and remove associated resources. Remember to delete the Terraform state files from the S3 bucket if you are discarding the project.
 
@@ -54,9 +59,33 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 
 - **Docker**: The `docker/Dockerfile` is based on the official Nginx image and simply adds a custom `index.html` to replace the default Nginx welcome page. This image is built on the EC2 instance at startup.
 - **EC2 User Data**: The EC2 instance is an Amazon Linux 2 server. On launch, Terraform injects the `scripts/user_data.sh` script, which installs Docker, enables it at boot, builds the custom image using the bundled Dockerfile + HTML, and runs the container with a restart policy so it survives reboots.
-- **Networking & Load Balancing**: Instead of the default VPC, Terraform now builds a dedicated VPC (with two public subnets, route tables, and an internet gateway) plus an **Application Load Balancer** that terminates HTTPS using your ACM certificate. HTTP automatically redirects to HTTPS.
-- **Security**: The instance’s security group only allows traffic from the ALB security group; nothing is exposed directly to the internet. No SSH access is configured by default; to enable it you must provide a key pair, add a port-22 ingress rule, and ensure IAM/security compliance. The S3 backend ensures state is persisted and shareable if working in a team (remember to update `terraform/backend.tf` with your bucket name and create the bucket ahead of time).
-- **Observability**: CloudWatch alarms monitor EC2 CPU usage and ALB target health, giving early warnings if the container is saturated or failing health checks.
+- **Networking & Load Balancing**: When `enable_alb=true`, Terraform builds a dedicated VPC (two public subnets, route tables, internet gateway) plus an **Application Load Balancer** that terminates HTTPS using your ACM certificate. HTTP automatically redirects to HTTPS. In free-tier mode we simply reuse the default VPC/subnet and expose port 80 directly.
+- **Security**:  
+  - **Free Tier mode**: A single security group permits inbound HTTP (port 80) from anywhere (to stay simple and within the Free Tier).  
+  - **Production mode**: The instance security group only allows traffic from the ALB; nothing is exposed directly to the internet.  
+  No SSH access is configured by default; to enable it you must provide a key pair, add a port-22 ingress rule, and ensure IAM/security compliance. The S3 backend ensures state is persisted and shareable if working in a team (remember to update `terraform/backend.tf` with your bucket name and create the bucket ahead of time).
+- **Observability**: CloudWatch alarms monitor EC2 CPU usage (all modes) and ALB target health (production mode) to provide early warnings if the container is saturated or failing health checks.
+
+## Architecture Modes & AWS Services
+
+- **Free Tier mode (default)**  
+  - Resources: default VPC/subnet, single `t2.micro` EC2 instance with Docker & Nginx, security group allowing HTTP.  
+  - Cost: fits entirely within the AWS Free Tier (assuming <750 instance hours and minimal data transfer).  
+  - Usage: `terraform -chdir=terraform apply` (leave `enable_alb` as `false`).
+
+- **Production HTTPS mode (`enable_alb=true`)**  
+  - Resources: dedicated VPC, two public subnets, Internet Gateway, Application Load Balancer (HTTP→HTTPS redirect), ACM certificate, per-component security groups, CloudWatch alarms for EC2 CPU and ALB target health.  
+  - Cost: incurs ALB hourly + LCU charges (~$1/day) in addition to the EC2 instance.  
+  - Usage: `terraform -chdir=terraform apply -var "enable_alb=true" -var "acm_certificate_arn=<your-arn>"`.
+
+**AWS Services Utilized**  
+- Amazon EC2 (Amazon Linux 2) hosting Dockerized Nginx.  
+- Docker (on EC2) serving the custom HTML page.  
+- Amazon VPC + subnets + Internet Gateway (production mode).  
+- AWS Application Load Balancer with ACM certificate (production mode).  
+- AWS CloudWatch metric alarms (CPU + ALB health).  
+- Amazon S3 (Terraform remote state) and optionally DynamoDB for state locking.  
+- AWS IAM (implicit via your credentials) to provision the infrastructure.
 
 ## Notes
 
@@ -67,9 +96,11 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 ## Troubleshooting
 
 - **`terraform init` fails with S3 backend errors**: Confirm the bucket in `terraform/backend.tf` exists in `ca-central-1` and that your IAM user has `s3:ListBucket`, `s3:GetObject`, and `s3:PutObject` permissions for the specified key.
-- **ACM certificate errors**: Ensure `acm_certificate_arn` references an **issued** certificate (status: `ISSUED`) in `ca-central-1`. Pending validation or certificates in another region will cause the ALB listener to fail creation.
+- **ACM certificate errors**: Ensure `acm_certificate_arn` references an **issued** certificate (status: `ISSUED`) in `ca-central-1`. Pending validation or certificates in another region will cause the ALB listener to fail creation (only relevant when `enable_alb=true`).
 - **`InvalidKeyPair.NotFound` during apply**: Either remove any non-null `key_name` or create/upload the matching key pair in EC2 before running Terraform.
-- **Unable to reach the web server**: Confirm the ALB DNS name resolves, security groups allow 80/443 inbound on the ALB, and the instance security group allows traffic from the ALB SG. Use `aws elbv2 describe-target-health` and `aws ec2 describe-instances` to confirm health and status checks.
+- **Unable to reach the web server**:  
+  - Free Tier mode: verify the instance security group still allows port 80 and the instance passed status checks.  
+  - Production mode: confirm the ALB DNS name resolves, security groups allow 80/443 inbound on the ALB, and the instance security group allows traffic from the ALB SG. Use `aws elbv2 describe-target-health` and `aws ec2 describe-instances` to confirm health and status checks.
 - **ALB reports unhealthy targets**: Check the CloudWatch alarm `docker-web-alb-unhealthy`, review target descriptions in the EC2 console, and inspect `/var/log/cloud-init-output.log` on the instance to ensure Docker is running and exposing port 80.
 - **GitHub Actions workflow fails to plan**: Ensure repo secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set, and that the IAM policy allows `terraform init/plan` operations (EC2 describe, S3 backend access).
 - **Docker container stops after reboot**: The provided `scripts/user_data.sh` configures Docker with `systemctl enable` and a `--restart unless-stopped` policy. Re-run `terraform apply` if the script did not finish (check `/var/log/cloud-init-output.log`).

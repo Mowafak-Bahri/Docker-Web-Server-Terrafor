@@ -10,6 +10,12 @@ variable "key_name" {
   default     = null
 }
 
+variable "enable_alb" {
+  description = "Enable the dedicated VPC + Application Load Balancer (HTTPS) architecture"
+  type        = bool
+  default     = false
+}
+
 variable "availability_zone" {
   description = "Availability Zone where the EC2 instance should run"
   type        = string
@@ -31,4 +37,10 @@ variable "vpc_cidr" {
 variable "acm_certificate_arn" {
   description = "ARN of an ACM certificate (in the same region) for HTTPS on the Application Load Balancer"
   type        = string
+  default     = null
+
+  validation {
+    condition     = var.enable_alb ? var.acm_certificate_arn != null && length(trim(var.acm_certificate_arn)) > 0 : true
+    error_message = "When enable_alb is true you must supply a non-empty acm_certificate_arn."
+  }
 }

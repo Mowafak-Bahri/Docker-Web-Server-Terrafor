@@ -10,10 +10,10 @@ output "instance_id" {
 
 output "alb_dns_name" {
   description = "DNS name of the Application Load Balancer"
-  value       = aws_lb.web.dns_name
+  value       = var.enable_alb ? aws_lb.web[0].dns_name : null
 }
 
 output "alb_https_url" {
   description = "HTTPS endpoint served by the Application Load Balancer"
-  value       = "https://${aws_lb.web.dns_name}"
+  value       = var.enable_alb ? "https://${aws_lb.web[0].dns_name}" : null
 }

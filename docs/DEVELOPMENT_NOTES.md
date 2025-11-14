@@ -31,6 +31,7 @@ This document captures the major decisions, challenges, and forward-looking plan
 8. **Production Networking & Observability**
    - Implemented a dedicated VPC, dual public subnets, and an Application Load Balancer terminating HTTPS with ACM.
    - Locked down security groups (ALB-only ingress) and added CloudWatch alarms for EC2 CPU saturation and ALB target health.
+   - Added the `enable_alb` flag so users can switch between a Free-Tier friendly setup and the paid production-grade stack.
 
 ## Lessons Learned
 
@@ -39,6 +40,7 @@ This document captures the major decisions, challenges, and forward-looking plan
 - **Security defaults matter**: it's safer to start closed (port 80 only, optional SSH) and let operators opt in to additional access patterns.
 - **CI needs credentials**: automations should explicitly require secrets instead of assuming developers have local profiles.
 - **Regional resources have constraints**: services like ACM issue certificates per-region and ALBs require subnets across AZs, so infrastructure defaults must account for those limitations.
+- **Cost-aware toggles help adoption**: exposing a simple variable (`enable_alb`) lets users choose between free experimentation and production-grade features without editing code.
 
 ## Roadmap & Future Enhancements
 
