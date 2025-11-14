@@ -13,6 +13,11 @@ data "aws_subnets" "default" {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }
+
+  filter {
+    name   = "availability-zone"
+    values = [var.availability_zone]
+  }
 }
 
 # Get the latest Amazon Linux 2 AMI (ALWAYS VALID)
@@ -33,15 +38,8 @@ data "aws_ami" "amazon_linux_2" {
 
 resource "aws_security_group" "web_sg" {
   name        = "web_sg"
-  description = "Allow HTTP and SSH"
+  description = "Allow inbound HTTP"
   vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
   ingress {
     from_port   = 80
@@ -63,9 +61,10 @@ resource "aws_security_group" "web_sg" {
 #######################################
 
 resource "aws_instance" "webserver" {
-  ami           = data.aws_ami.amazon_linux_2.id
-  instance_type = var.instance_type
-  key_name      = var.key_name
+  ami               = data.aws_ami.amazon_linux_2.id
+  instance_type     = var.instance_type
+  key_name          = var.key_name
+  availability_zone = var.availability_zone
 
   subnet_id = data.aws_subnets.default.ids[0]
 
@@ -77,12 +76,5 @@ resource "aws_instance" "webserver" {
     Name = "Docker-Web-Server"
   }
 
-  user_data = <<-EOF
-    #!/bin/bash
-    yum update -y
-    amazon-linux-extras install docker -y
-    systemctl enable docker
-    systemctl start docker
-    docker run -d -p 80:80 nginx
-  EOF
+  user_data = file("${path.module}/../scripts/user_data.sh")
 }

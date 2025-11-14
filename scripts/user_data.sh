@@ -1,10 +1,14 @@
 #!/bin/bash
-# Update and install Docker
+set -euo pipefail
+
+# Update base packages and install Docker from amazon-linux-extras to ensure service availability
 yum update -y
-yum install -y docker
-service docker start
+amazon-linux-extras install docker -y
+systemctl enable docker
+systemctl start docker
+
 # Add ec2-user to docker group for future convenience
-usermod -a -G docker ec2-user
+usermod -a -G docker ec2-user || true
 
 # Create custom index.html
 cat >/home/ec2-user/index.html <<'EOF'
@@ -23,6 +27,11 @@ FROM nginx:alpine
 COPY index.html /usr/share/nginx/html/index.html
 EOF
 
-# Build and run the custom Nginx Docker image
+# Build the custom Nginx Docker image
 docker build -t custom-nginx /home/ec2-user
-docker run -d --restart unless-stopped -p 80:80 custom-nginx
+
+# Ensure any previous container is removed before running the new one
+docker rm -f custom-nginx >/dev/null 2>&1 || true
+
+# Run the container with restart policy so it survives reboots
+docker run -d --name custom-nginx --restart unless-stopped -p 80:80 custom-nginx
