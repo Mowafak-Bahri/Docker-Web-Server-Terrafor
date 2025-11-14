@@ -28,16 +28,20 @@ This document captures the major decisions, challenges, and forward-looking plan
 7. **Developer Tooling Gaps**
    - Some contributors lacked GNU Make (common on Windows), so we documented that it is optional and provided installation guidance plus raw Terraform command equivalents.
 
+8. **Production Networking & Observability**
+   - Implemented a dedicated VPC, dual public subnets, and an Application Load Balancer terminating HTTPS with ACM.
+   - Locked down security groups (ALB-only ingress) and added CloudWatch alarms for EC2 CPU saturation and ALB target health.
+
 ## Lessons Learned
 
 - **Documentation drift happens quickly**: keeping README instructions aligned with Terraform defaults prevents confusion (e.g., Free-Tier instance type, SSH defaults, backend requirements).
 - **Idempotent bootstrapping is critical**: user-data scripts should tolerate reruns and leave the system in a known-good state.
 - **Security defaults matter**: it's safer to start closed (port 80 only, optional SSH) and let operators opt in to additional access patterns.
 - **CI needs credentials**: automations should explicitly require secrets instead of assuming developers have local profiles.
+- **Regional resources have constraints**: services like ACM issue certificates per-region and ALBs require subnets across AZs, so infrastructure defaults must account for those limitations.
 
 ## Roadmap & Future Enhancements
 
-- Harden networking with HTTPS/ALB + ACM certificates.
 - Offer optional Session Manager access or bastion-host module for SSH-less administration.
 - Parameterize backend configuration through partial `backend.hcl` files to support multiple environments.
 - Add automated smoke tests (curl checks) after Terraform `apply` in non-production accounts.

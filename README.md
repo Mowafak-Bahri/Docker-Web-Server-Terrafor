@@ -17,6 +17,7 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 - **AWS CLI** configured or environment variables set for AWS credentials. (Terraform will use these to authenticate.)
 - **Terraform** installed on your system.
 - An S3 bucket (in `ca-central-1`) for storing the Terraform state (and an optional DynamoDB table for state locking, recommended but not required for this demo).
+- An **ACM certificate** in `ca-central-1` that covers the domain you plan to use for HTTPS (or a temporary wildcard certificate). You will supply its ARN to Terraform.
 - (Optional) **Docker** installed locally if you want to build/test the Docker image manually, but not required for deployment since the EC2 instance will build and run the image.
 
 ## Local Setup
@@ -33,8 +34,11 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 ## Running the Project
 
 1. **Backend Setup**: Update the `terraform/backend.tf` file with your S3 bucket name (and adjust the key/path if desired). Create the S3 bucket beforehand. For team environments, it's recommended to also configure a DynamoDB table for state locking (not included by default).
-2. **Configure Variables**: Review `terraform/variables.tf`. The default AWS region is `ca-central-1` and instance type is `t2.micro` (Free Tier). No SSH key is configured by default; if you need SSH access, set the `key_name` variable to an existing EC2 key pair **and** add an additional security-group rule for port 22 (the supplied configuration intentionally keeps SSH closed).
-   - If your AWS account has zonal capacity constraints, adjust `availability_zone` (defaults to `ca-central-1a`) to another zone that supports `t2.micro`.
+2. **Configure Variables**: Review `terraform/variables.tf`. Update at minimum:
+   - `acm_certificate_arn`: required – must point to an issued ACM certificate in `ca-central-1`.
+   - `availability_zone` / `secondary_availability_zone`: tune if your account has zonal capacity constraints.
+   - `vpc_cidr`: change if `10.0.0.0/16` conflicts with existing networks.
+   - `key_name`: optional – set only if you need SSH access, but remember to also add a security-group rule for port 22.
 3. **Initialize Terraform**:  
    - Using makefile: run `make init` to initialize the Terraform backend and provider.  
    - Or manually: `terraform -chdir=terraform init`.
@@ -42,7 +46,7 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
    - Optionally run `make plan` (or `terraform -chdir=terraform plan`) to review the planned changes.  
    - Deploy the infrastructure with `make apply` (or `terraform -chdir=terraform apply`). Terraform will provision the EC2 instance, security group, etc. 
 5. **Deployment Output**: After apply, Terraform will output the EC2 instance's public IP and a URL. You can use the IP or URL to test the deployment.
-6. **Test the Web Server**: In your browser or via curl, open `http://<EC2_PUBLIC_IP>`. You should see the custom HTML page served by Nginx (which confirms Docker and Nginx are running on the instance).
+6. **Test the Web Server**: Grab the `alb_https_url` output (or `alb_dns_name`) and open it in a browser. You should see the custom HTML page served via HTTPS through the Application Load Balancer.
 7. **Optional - GitHub Actions**: The workflow in `.github/workflows/terraform.yml` expects the repository secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` so it can run `terraform plan` against your remote state backend. Add those secrets (with least-privilege IAM credentials) before enabling the workflow.
 8. **Cleanup**: When finished, destroy the resources to avoid ongoing charges (though a t2.micro on Free Tier has no cost up to certain usage): run `make destroy` (or `terraform -chdir=terraform destroy`). This will terminate the EC2 instance and remove associated resources. Remember to delete the Terraform state files from the S3 bucket if you are discarding the project.
 
@@ -50,12 +54,9 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 
 - **Docker**: The `docker/Dockerfile` is based on the official Nginx image and simply adds a custom `index.html` to replace the default Nginx welcome page. This image is built on the EC2 instance at startup.
 - **EC2 User Data**: The EC2 instance is an Amazon Linux 2 server. On launch, Terraform injects the `scripts/user_data.sh` script, which installs Docker, enables it at boot, builds the custom image using the bundled Dockerfile + HTML, and runs the container with a restart policy so it survives reboots.
-- **Terraform**: Terraform config (`terraform/main.tf` and related files) defines the infrastructure:
-  - An EC2 instance (t2.micro, Amazon Linux 2) in the default VPC of **ca-central-1**.
-  - A Security Group that allows inbound HTTP (port 80) from anywhere.
-  - The EC2 instance is configured with the user-data script for automatic provisioning.
-  - The Terraform state is stored remotely in the specified S3 bucket (`backend.tf` configures this).
-- **Security**: For simplicity, port 80 is open to the world. No SSH access is configured by default; to enable it you must provide a key pair, add a port-22 ingress rule, and ensure IAM/security compliance. The S3 backend ensures state is persisted and shareable if working in a team (remember to update `terraform/backend.tf` with your bucket name and create the bucket ahead of time).
+- **Networking & Load Balancing**: Instead of the default VPC, Terraform now builds a dedicated VPC (with two public subnets, route tables, and an internet gateway) plus an **Application Load Balancer** that terminates HTTPS using your ACM certificate. HTTP automatically redirects to HTTPS.
+- **Security**: The instance’s security group only allows traffic from the ALB security group; nothing is exposed directly to the internet. No SSH access is configured by default; to enable it you must provide a key pair, add a port-22 ingress rule, and ensure IAM/security compliance. The S3 backend ensures state is persisted and shareable if working in a team (remember to update `terraform/backend.tf` with your bucket name and create the bucket ahead of time).
+- **Observability**: CloudWatch alarms monitor EC2 CPU usage and ALB target health, giving early warnings if the container is saturated or failing health checks.
 
 ## Notes
 
@@ -66,15 +67,16 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 ## Troubleshooting
 
 - **`terraform init` fails with S3 backend errors**: Confirm the bucket in `terraform/backend.tf` exists in `ca-central-1` and that your IAM user has `s3:ListBucket`, `s3:GetObject`, and `s3:PutObject` permissions for the specified key.
+- **ACM certificate errors**: Ensure `acm_certificate_arn` references an **issued** certificate (status: `ISSUED`) in `ca-central-1`. Pending validation or certificates in another region will cause the ALB listener to fail creation.
 - **`InvalidKeyPair.NotFound` during apply**: Either remove any non-null `key_name` or create/upload the matching key pair in EC2 before running Terraform.
-- **Unable to reach the web server**: Verify the instance has a public IP (default VPC), security group allows inbound HTTP (port 80), and no network ACLs block the traffic. Use `aws ec2 describe-instances` to inspect status checks.
+- **Unable to reach the web server**: Confirm the ALB DNS name resolves, security groups allow 80/443 inbound on the ALB, and the instance security group allows traffic from the ALB SG. Use `aws elbv2 describe-target-health` and `aws ec2 describe-instances` to confirm health and status checks.
+- **ALB reports unhealthy targets**: Check the CloudWatch alarm `docker-web-alb-unhealthy`, review target descriptions in the EC2 console, and inspect `/var/log/cloud-init-output.log` on the instance to ensure Docker is running and exposing port 80.
 - **GitHub Actions workflow fails to plan**: Ensure repo secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set, and that the IAM policy allows `terraform init/plan` operations (EC2 describe, S3 backend access).
 - **Docker container stops after reboot**: The provided `scripts/user_data.sh` configures Docker with `systemctl enable` and a `--restart unless-stopped` policy. Re-run `terraform apply` if the script did not finish (check `/var/log/cloud-init-output.log`).
 
 ## Roadmap (Prioritized)
 
-1. **Production hardening** – Add HTTPS via ACM + ALB, move into a dedicated VPC/subnets, and wire CloudWatch logs/alarms so the stack looks production-ready.
-2. **Operational automation** – Expand GitHub Actions to run `terraform plan` for every PR and optional `apply` to a staging workspace, then add smoke tests (curl the public endpoint) to prove deployments succeed.
-3. **Scalability features** – Introduce auto scaling (ASG or ECS) and integrate a managed data store (RDS/DynamoDB) plus IAM roles to showcase multi-service architecture.
-4. **Maintainability & security** – Break Terraform into reusable modules, add policy-as-code checks (tfsec/checkov), and document runbooks/troubleshooting for ongoing support.
-5. **Documentation polish** – Produce an architecture diagram, screenshots, and a concise “Key Achievements” section (plus live demo URL if available) to communicate the solution clearly.
+1. **Operational automation** – Expand GitHub Actions to run `terraform plan` for every PR and optional `apply` to a staging workspace, then add smoke tests (curl the public endpoint) to prove deployments succeed.
+2. **Scalability features** – Introduce auto scaling (ASG or ECS) and integrate a managed data store (RDS/DynamoDB) plus IAM roles to showcase multi-service architecture.
+3. **Maintainability & security** – Break Terraform into reusable modules, add policy-as-code checks (tfsec/checkov), and document runbooks/troubleshooting for ongoing support.
+4. **Documentation polish** – Produce an architecture diagram, screenshots, and a concise “Key Achievements” section (plus live demo URL if available) to communicate the solution clearly.
