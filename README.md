@@ -71,11 +71,10 @@ This project contains code to deploy a custom Nginx web server (in a Docker cont
 - **GitHub Actions workflow fails to plan**: Ensure repo secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set, and that the IAM policy allows `terraform init/plan` operations (EC2 describe, S3 backend access).
 - **Docker container stops after reboot**: The provided `scripts/user_data.sh` configures Docker with `systemctl enable` and a `--restart unless-stopped` policy. Re-run `terraform apply` if the script did not finish (check `/var/log/cloud-init-output.log`).
 
-## Roadmap
+## Roadmap (Prioritized)
 
-- Implement HTTPS termination via AWS Certificate Manager and an Application Load Balancer while keeping Terraform modules modular.
-- Add optional SSH access controlled via Session Manager or a locked-down `bastion` security-group toggle.
-- Parameterize the backend configuration (bucket, key, region) via partial configuration files for easier reuse across environments.
-- Extend GitHub Actions to run automated integration tests (e.g., curl the instance endpoint) after Terraform `apply` in non-prod workspaces.
-- Add observability: CloudWatch Logs/metrics for Docker/Nginx plus alarms for instance health.
-- Track development context and future plans in `docs/DEVELOPMENT_NOTES.md`.
+1. **Production hardening** – Add HTTPS via ACM + ALB, move into a dedicated VPC/subnets, and wire CloudWatch logs/alarms so the stack looks production-ready.
+2. **Operational automation** – Expand GitHub Actions to run `terraform plan` for every PR and optional `apply` to a staging workspace, then add smoke tests (curl the public endpoint) to prove deployments succeed.
+3. **Scalability features** – Introduce auto scaling (ASG or ECS) and integrate a managed data store (RDS/DynamoDB) plus IAM roles to showcase multi-service architecture.
+4. **Maintainability & security** – Break Terraform into reusable modules, add policy-as-code checks (tfsec/checkov), and document runbooks/troubleshooting for ongoing support.
+5. **Documentation polish** – Produce an architecture diagram, screenshots, and a concise “Key Achievements” section (plus live demo URL if available) to communicate the solution clearly.
