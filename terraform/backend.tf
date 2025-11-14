@@ -1,9 +1,7 @@
 terraform {
   backend "s3" {
-    # **Configure these settings for your environment:**
-    bucket = "YOUR_S3_BACKEND_BUCKET_NAME"    # Replace with your S3 bucket name
-    key    = "nginx-docker-ec2/terraform.tfstate"  # Path within the bucket for state file
+    bucket = "mowafak-terraform-backend-001"
+    key    = "terraform/state.tfstate"
     region = "ca-central-1"
-    # (Optional: For state locking, you can add "dynamodb_table = <YOUR_LOCK_TABLE>" if using DynamoDB)
   }
 }
